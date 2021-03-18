@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"runtime"
+	"github.com/zenthangplus/goccm"
 )
 
 const (
@@ -22,16 +24,17 @@ const (
 )
 
 type tomlCfg struct {
-	User, Password, DeviceDB, ConfigDir, LogFile string
+	User, Password, DeviceDB, ConfigDir, LogFile,Threads string
 	Type                                         map[string]TypeCfg
 }
 
 type TypeCfg struct {
-	Method, Port                           string
-	Timeout                                string
-	Debug                                  bool
-	UserPrompt, PwdPrompt, Prompt, Comment string
-	CmdInventory, CmdConfig                []string
+	Method, Port               string
+	Timeout                    string
+	Debug                      bool
+	UserPrompt                 string
+	PwdPrompt, Prompt, Comment string
+	CmdInventory, CmdConfig    []string
 }
 
 var (
@@ -89,34 +92,24 @@ func parse_csv_devicedb(cfg_file string) [][]string {
 	return csvdb
 }
 
-func create_backup_file(Hostname string, inventory, config []string) {
-	cfgFile := cfg.ConfigDir + "/" + Hostname
-	cf, err := os.Create(cfgFile)
-	if err != nil {
-		log.Printf("device %s, error while creating config file \"%s\": %s\n", Hostname, cfgFile, err)
-		return
-	}
-	defer cf.Close()
-	_, err = fmt.Fprintf(cf, "%s\n", inventory)
+func write_config (cf *os.File, input []string,Hostname,cfgFile string) {
+    for i:=0; i<len(input); i++ {
+	_, err:= fmt.Fprintf(cf, "%s\n", input[i])
 	if err != nil {
 		log.Printf("device %s, error while write config file \"%s\": %s\n", Hostname, cfgFile, err)
 		return
 	}
-	_, err = fmt.Fprintf(cf, "%s\n", config)
-	if err != nil {
-		log.Printf("device %s, error while write config file \"%s\": %s\n", Hostname, cfgFile, err)
-		return
-	}
-
+    }
 }
 
-func comment_string(input []string, symbol string) []string {
+func prepare_string(input []string, comment string) []string {
 	out := make([]string, 0)
 	for i := 0; i < len(input); i++ {
-		for _, line := range strings.Split(input[i], "\n") {
-			line := symbol + line
-			out = append(out, line)
-
+		ss:=strings.Split(input[i], "\n")
+		for si:=0; si<len(ss)-1; si++ {
+		    string:= fmt.Sprintf("%s%s",comment,ss[si])
+		    string= strings.TrimSpace(string)
+		    out = append(out, string)
 		}
 	}
 	return out
@@ -125,11 +118,12 @@ func comment_string(input []string, symbol string) []string {
 func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, promptRE *regexp.Regexp, Timeout time.Duration) []string {
 	out := make([]string, 0)
 	for i := 0; i < len(Commands); i++ {
-		err := e.Send(Commands[i] + "\n\r")
+	        err := e.Send(Commands[i] + "\n\r")
 		if err != nil {
 			log.Printf("device %s, error while sending command \"%s\": %s\n", Hostname, Commands[i], err)
 			return out
 		}
+		time.Sleep(1*time.Second)
 		result, _, err := e.Expect(promptRE, Timeout)
 		if err != nil {
 			log.Printf("device %s, error after sending command \"%s\": %s\n", Hostname, Commands[i], err)
@@ -139,17 +133,21 @@ func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, prompt
 	}
 	return out
 }
-
-func backup_device(Hostname, Address, DevType string, optDebug bool) {
+func backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType string, optDebug bool) {
 	var (
 		e       *expect.GExpect
 		Timeout time.Duration
 		err     error
 	)
+	defer c.Done()
+	userprompt := cfg.Type[DevType].UserPrompt
+	if userprompt == "" {
+		userprompt = "ogin:"
+	}
 	fmt.Printf("Connecting to %s, %s type %s\n", Hostname, Address, DevType)
 	log.Printf("Connecting to %s, %s type %s\n", Hostname, Address, DevType)
 	promptRE := regexp.MustCompile(cfg.Type[DevType].Prompt)
-	userRE := regexp.MustCompile(cfg.Type[DevType].UserPrompt)
+	userRE := regexp.MustCompile(userprompt)
 	passRE := regexp.MustCompile(cfg.Type[DevType].PwdPrompt)
 	if cfg.Type[DevType].Timeout == "" {
 		Timeout = 60 * time.Second
@@ -183,16 +181,27 @@ func backup_device(Hostname, Address, DevType string, optDebug bool) {
 
 	//get inventory and add comment symbol to output
 	result := runcmd_device(cfg.Type[DevType].CmdInventory, e, Hostname, promptRE, Timeout)
-	inventory := comment_string(result, cfg.Type[DevType].Comment)
-	fmt.Printf("%s\n", inventory)
-	config := runcmd_device(cfg.Type[DevType].CmdConfig, e, Hostname, promptRE, Timeout)
-	fmt.Printf("%s\n", config)
-	create_backup_file(Hostname, inventory, config)
+	inventory := prepare_string(result, cfg.Type[DevType].Comment)
+	time.Sleep(1 * time.Second)
+	// get config
+	result = runcmd_device(cfg.Type[DevType].CmdConfig, e, Hostname, promptRE, Timeout)
+	config := prepare_string(result, "")
+	// write to file
+	cfgFile:=cfg.ConfigDir+"/"+Hostname
+	cf, err := os.Create(cfgFile)
+	if err != nil {
+		log.Printf("device %s, error while creating config file \"%s\": %s\n", Hostname, cfgFile, err)
+		return
+	}
+	defer cf.Close()
+	write_config (cf, inventory,Hostname,cfgFile) 
+	write_config (cf, config,Hostname,cfgFile) 
 }
 
 func main() {
 	var (
 		db [][]string
+		threads int
 	)
 	//parse command arguments
 	optHelp := getopt.BoolLong("help", 'h', "display help")
@@ -211,6 +220,13 @@ func main() {
 
 	cfg = parse_toml_config(*optConfig)   //parse config
 	db = parse_csv_devicedb(cfg.DeviceDB) //parse devices database(csv file)
+	//max parallel jobs setup
+	if cfg.Threads=="" {
+	    threads=runtime.NumCPU()*2
+	} else {
+	    threads,_=strconv.Atoi(cfg.Threads)
+	}
+	c := goccm.New(threads)
 	//create log
 	lf, err := os.Create(cfg.LogFile)
 	if err != nil {
@@ -224,6 +240,8 @@ func main() {
 		Hostname := db[i][0]
 		Address := db[i][1]
 		DevType := db[i][2]
-		backup_device(Hostname, Address, DevType, *optDebug)
+		c.Wait()
+		go backup_device(c, Hostname, Address, DevType, *optDebug)
 	}
+	 c.WaitAllDone()
 }
