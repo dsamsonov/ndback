@@ -133,7 +133,7 @@ func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, prompt
 	}
 	return out
 }
-func backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType string, optDebug bool) {
+func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType string, optDebug bool) {
 	var (
 		e       *expect.GExpect
 		Timeout time.Duration
@@ -170,8 +170,8 @@ func backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType string
 
 	//login to device
 	_, _, _, err = e.ExpectSwitchCase([]expect.Caser{
-		&expect.Case{R: userRE, S: cfg.User + "\n", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong username")), Rt: 2},
-		&expect.Case{R: passRE, S: cfg.Password + "\n", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong password")), Rt: 2},
+		&expect.Case{R: userRE, S: cfg.User + "\n\r", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong username")), Rt: 2},
+		&expect.Case{R: passRE, S: cfg.Password + "\n\r", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong password")), Rt: 2},
 		&expect.Case{R: promptRE, T: expect.OK()},
 	}, Timeout)
 	if err != nil {
@@ -241,7 +241,9 @@ func main() {
 		Address := db[i][1]
 		DevType := db[i][2]
 		c.Wait()
-		go backup_device(c, Hostname, Address, DevType, *optDebug)
+		if (cfg.Type[DevType].Method=="telnet" || cfg.Type[DevType].Method=="ssh") {
+		    go shell_backup_device(c, Hostname, Address, DevType, *optDebug)
+		}
 	}
 	 c.WaitAllDone()
 }
