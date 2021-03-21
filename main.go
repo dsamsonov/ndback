@@ -6,16 +6,16 @@ import (
 	"github.com/google/goexpect"
 	"github.com/naoina/toml"
 	"github.com/pborman/getopt/v2"
+	"github.com/zenthangplus/goccm"
 	"google.golang.org/grpc/codes"
 	"io"
 	"log"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
-	"runtime"
-	"github.com/zenthangplus/goccm"
 )
 
 const (
@@ -24,8 +24,8 @@ const (
 )
 
 type tomlCfg struct {
-	User, Password, DeviceDB, ConfigDir, LogFile,Threads string
-	Type                                         map[string]TypeCfg
+	User, Password, DeviceDB, ConfigDir, LogFile, Threads string
+	Type                                                  map[string]TypeCfg
 }
 
 type TypeCfg struct {
@@ -38,7 +38,8 @@ type TypeCfg struct {
 }
 
 var (
-	cfg tomlCfg
+	cfg     tomlCfg
+	DevType string
 )
 
 func Fatal(err error) {
@@ -92,24 +93,58 @@ func parse_csv_devicedb(cfg_file string) [][]string {
 	return csvdb
 }
 
-func write_config (cf *os.File, input []string,Hostname,cfgFile string) {
-    for i:=0; i<len(input); i++ {
-	_, err:= fmt.Fprintf(cf, "%s\n", input[i])
-	if err != nil {
-		log.Printf("device %s, error while write config file \"%s\": %s\n", Hostname, cfgFile, err)
-		return
+func write_config(cf *os.File, input []string, Hostname, cfgFile string) {
+	for i := 0; i < len(input); i++ {
+		_, err := fmt.Fprintf(cf, "%s\n", input[i])
+		if err != nil {
+			log.Printf("device %s, error while write config file \"%s\": %s\n", Hostname, cfgFile, err)
+			return
+		}
 	}
-    }
+}
+
+func check_unwanted_string_array(array []string, str string) bool {
+	for i := 0; i < len(array); i++ {
+		re, err := regexp.MatchString(array[i], str)
+		if err != nil {
+			log.Printf("Device type %s, parse unwanted strings error in %s: %s\n", DevType, array[i], err)
+			return true
+		}
+		if re == true {
+			return true
+		}
+	}
+	return false
+}
+
+func check_unwanted_string(str string) bool {
+	//unwanted prompt string
+	prompt := []string{cfg.Type[DevType].Prompt}
+	if check_unwanted_string_array(prompt, str) == true {
+		return true
+	}
+	//unwanted cmd inventory string
+	if check_unwanted_string_array(cfg.Type[DevType].CmdInventory, str) == true {
+		return true
+	}
+	//unwanted cmd conf string
+	if check_unwanted_string_array(cfg.Type[DevType].CmdConfig, str) == true {
+		return true
+	}
+	return false
 }
 
 func prepare_string(input []string, comment string) []string {
 	out := make([]string, 0)
 	for i := 0; i < len(input); i++ {
-		ss:=strings.Split(input[i], "\n")
-		for si:=0; si<len(ss)-1; si++ {
-		    string:= fmt.Sprintf("%s%s",comment,ss[si])
-		    string= strings.TrimSpace(string)
-		    out = append(out, string)
+		ss := strings.Split(input[i], "\n")
+		for si := 0; si < len(ss); si++ {
+			if check_unwanted_string(ss[si]) == true {
+				continue
+			}
+			string := fmt.Sprintf("%s%s", comment, ss[si])
+			string = strings.TrimSpace(string)
+			out = append(out, string)
 		}
 	}
 	return out
@@ -118,12 +153,12 @@ func prepare_string(input []string, comment string) []string {
 func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, promptRE *regexp.Regexp, Timeout time.Duration) []string {
 	out := make([]string, 0)
 	for i := 0; i < len(Commands); i++ {
-	        err := e.Send(Commands[i] + "\n\r")
+		err := e.Send(Commands[i] + "\n\r")
 		if err != nil {
 			log.Printf("device %s, error while sending command \"%s\": %s\n", Hostname, Commands[i], err)
 			return out
 		}
-		time.Sleep(1*time.Second)
+		time.Sleep(1 * time.Second)
 		result, _, err := e.Expect(promptRE, Timeout)
 		if err != nil {
 			log.Printf("device %s, error after sending command \"%s\": %s\n", Hostname, Commands[i], err)
@@ -133,7 +168,7 @@ func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, prompt
 	}
 	return out
 }
-func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType string, optDebug bool) {
+func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address string, optDebug bool) {
 	var (
 		e       *expect.GExpect
 		Timeout time.Duration
@@ -187,20 +222,20 @@ func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType 
 	result = runcmd_device(cfg.Type[DevType].CmdConfig, e, Hostname, promptRE, Timeout)
 	config := prepare_string(result, "")
 	// write to file
-	cfgFile:=cfg.ConfigDir+"/"+Hostname
+	cfgFile := cfg.ConfigDir + "/" + Hostname
 	cf, err := os.Create(cfgFile)
 	if err != nil {
 		log.Printf("device %s, error while creating config file \"%s\": %s\n", Hostname, cfgFile, err)
 		return
 	}
 	defer cf.Close()
-	write_config (cf, inventory,Hostname,cfgFile) 
-	write_config (cf, config,Hostname,cfgFile) 
+	write_config(cf, inventory, Hostname, cfgFile)
+	write_config(cf, config, Hostname, cfgFile)
 }
 
 func main() {
 	var (
-		db [][]string
+		db      [][]string
 		threads int
 	)
 	//parse command arguments
@@ -221,10 +256,10 @@ func main() {
 	cfg = parse_toml_config(*optConfig)   //parse config
 	db = parse_csv_devicedb(cfg.DeviceDB) //parse devices database(csv file)
 	//max parallel jobs setup
-	if cfg.Threads=="" {
-	    threads=runtime.NumCPU()*2
+	if cfg.Threads == "" {
+		threads = runtime.NumCPU() * 2
 	} else {
-	    threads,_=strconv.Atoi(cfg.Threads)
+		threads, _ = strconv.Atoi(cfg.Threads)
 	}
 	c := goccm.New(threads)
 	//create log
@@ -239,11 +274,11 @@ func main() {
 	for i := 0; i < len(db); i++ {
 		Hostname := db[i][0]
 		Address := db[i][1]
-		DevType := db[i][2]
+		DevType = db[i][2]
 		c.Wait()
-		if (cfg.Type[DevType].Method=="telnet" || cfg.Type[DevType].Method=="ssh") {
-		    go shell_backup_device(c, Hostname, Address, DevType, *optDebug)
+		if cfg.Type[DevType].Method == "telnet" || cfg.Type[DevType].Method == "ssh" {
+			go shell_backup_device(c, Hostname, Address, *optDebug)
 		}
 	}
-	 c.WaitAllDone()
+	c.WaitAllDone()
 }
