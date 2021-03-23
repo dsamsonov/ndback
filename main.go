@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	version = "0.0.1"
+	version = "1.0"
 	author  = "Denis Samsonov (i@denjs.com)"
 )
 
@@ -29,17 +29,16 @@ type tomlCfg struct {
 }
 
 type TypeCfg struct {
-	Method, Port               string
-	Timeout                    string
-	Debug                      bool
-	UserPrompt                 string
-	PwdPrompt, Prompt, Comment string
-	CmdInventory, CmdConfig    []string
+	Method, Port                             string
+	Timeout                                  string
+	Debug                                    bool
+	UserPrompt                               string
+	PwdPrompt, Prompt, Comment               string
+	CmdInventory, CmdConfig, UnwantedStrings []string
 }
 
 var (
-	cfg     tomlCfg
-	DevType string
+	cfg tomlCfg
 )
 
 func Fatal(err error) {
@@ -103,11 +102,11 @@ func write_config(cf *os.File, input []string, Hostname, cfgFile string) {
 	}
 }
 
-func check_unwanted_string_array(array []string, str string) bool {
+func check_unwanted_strings(array []string, str string) bool {
 	for i := 0; i < len(array); i++ {
-		re, err := regexp.MatchString(array[i], str)
+		re, err := regexp.MatchString(array[i], strings.TrimSpace(str))
 		if err != nil {
-			log.Printf("Device type %s, parse unwanted strings error in %s: %s\n", DevType, array[i], err)
+			log.Printf("Parse unwanted strings error in %s: %s\n", array[i], err)
 			return true
 		}
 		if re == true {
@@ -117,29 +116,26 @@ func check_unwanted_string_array(array []string, str string) bool {
 	return false
 }
 
-func check_unwanted_string(str string) bool {
-	//unwanted prompt string
-	prompt := []string{cfg.Type[DevType].Prompt}
-	if check_unwanted_string_array(prompt, str) == true {
-		return true
-	}
-	//unwanted cmd inventory string
-	if check_unwanted_string_array(cfg.Type[DevType].CmdInventory, str) == true {
-		return true
-	}
-	//unwanted cmd conf string
-	if check_unwanted_string_array(cfg.Type[DevType].CmdConfig, str) == true {
-		return true
-	}
-	return false
-}
-
-func prepare_string(input []string, comment string) []string {
+func prepare_string(input []string, comment, DevType string) []string {
 	out := make([]string, 0)
 	for i := 0; i < len(input); i++ {
 		ss := strings.Split(input[i], "\n")
 		for si := 0; si < len(ss); si++ {
-			if check_unwanted_string(ss[si]) == true {
+			//ss[si] = strings.TrimSpace(ss[si])
+			//unwanted prompt string
+			prompt := []string{cfg.Type[DevType].Prompt}
+			if check_unwanted_strings(prompt, ss[si]) == true {
+				continue
+			}
+			//unwanted cmd inventory string
+			if check_unwanted_strings(cfg.Type[DevType].CmdInventory, ss[si]) == true {
+				continue
+			}
+			//unwanted cmd conf string
+			if check_unwanted_strings(cfg.Type[DevType].CmdConfig, ss[si]) == true {
+				continue
+			}
+			if check_unwanted_strings(cfg.Type[DevType].UnwantedStrings, ss[si]) == true {
 				continue
 			}
 			string := fmt.Sprintf("%s%s", comment, ss[si])
@@ -168,7 +164,7 @@ func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, prompt
 	}
 	return out
 }
-func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address string, optDebug bool) {
+func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType string, optDebug bool) {
 	var (
 		e       *expect.GExpect
 		Timeout time.Duration
@@ -216,11 +212,11 @@ func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address string, o
 
 	//get inventory and add comment symbol to output
 	result := runcmd_device(cfg.Type[DevType].CmdInventory, e, Hostname, promptRE, Timeout)
-	inventory := prepare_string(result, cfg.Type[DevType].Comment)
+	inventory := prepare_string(result, cfg.Type[DevType].Comment, DevType)
 	time.Sleep(1 * time.Second)
 	// get config
 	result = runcmd_device(cfg.Type[DevType].CmdConfig, e, Hostname, promptRE, Timeout)
-	config := prepare_string(result, "")
+	config := prepare_string(result, "", DevType)
 	// write to file
 	cfgFile := cfg.ConfigDir + "/" + Hostname
 	cf, err := os.Create(cfgFile)
@@ -274,10 +270,10 @@ func main() {
 	for i := 0; i < len(db); i++ {
 		Hostname := db[i][0]
 		Address := db[i][1]
-		DevType = db[i][2]
+		DevType := db[i][2]
 		c.Wait()
 		if cfg.Type[DevType].Method == "telnet" || cfg.Type[DevType].Method == "ssh" {
-			go shell_backup_device(c, Hostname, Address, *optDebug)
+			go shell_backup_device(c, Hostname, Address, DevType, *optDebug)
 		}
 	}
 	c.WaitAllDone()
