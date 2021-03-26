@@ -26,6 +26,7 @@ const (
 type tomlCfg struct {
 	User, Password, DeviceDB, ConfigDir, LogFile, Threads string
 	Type                                                  map[string]TypeCfg
+	Site                                                  map[string]SiteCfg
 }
 
 type TypeCfg struct {
@@ -35,6 +36,10 @@ type TypeCfg struct {
 	UserPrompt                               string
 	PwdPrompt, Prompt, Comment               string
 	CmdInventory, CmdConfig, UnwantedStrings []string
+}
+
+type SiteCfg struct {
+	ConfigDir string
 }
 
 var (
@@ -164,11 +169,12 @@ func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, prompt
 	}
 	return out
 }
-func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType string, optDebug bool) {
+func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType, Site string, optDebug bool) {
 	var (
 		e       *expect.GExpect
 		Timeout time.Duration
 		err     error
+		cfgDir  string
 	)
 	defer c.Done()
 	userprompt := cfg.Type[DevType].UserPrompt
@@ -218,7 +224,16 @@ func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType 
 	result = runcmd_device(cfg.Type[DevType].CmdConfig, e, Hostname, promptRE, Timeout)
 	config := prepare_string(result, "", DevType)
 	// write to file
-	cfgFile := cfg.ConfigDir + "/" + Hostname
+	if cfg.Site[Site].ConfigDir != "" {
+		cfgDir = cfg.Site[Site].ConfigDir
+	} else {
+		cfgDir = cfg.ConfigDir
+	}
+	//check dir exist or create it
+	if _, err := os.Stat(cfgDir); os.IsNotExist(err) {
+		os.Mkdir(cfgDir, 0755)
+	}
+	cfgFile := cfgDir + "/" + Hostname
 	cf, err := os.Create(cfgFile)
 	if err != nil {
 		log.Printf("device %s, error while creating config file \"%s\": %s\n", Hostname, cfgFile, err)
@@ -271,10 +286,21 @@ func main() {
 		Hostname := db[i][0]
 		Address := db[i][1]
 		DevType := db[i][2]
+		Site := db[i][3]
+		if cfg.Type[DevType].Method == "" {
+			log.Printf("device %s, error: No [type.%s] method in %s\n", Hostname, DevType, *optConfig)
+			continue
+		}
+		if cfg.Type[DevType].Port == "" {
+			log.Printf("device %s, error: No [type.%s] port in %s\n", Hostname, DevType, *optConfig)
+			continue
+		}
 		c.Wait()
 		if cfg.Type[DevType].Method == "telnet" || cfg.Type[DevType].Method == "ssh" {
-			go shell_backup_device(c, Hostname, Address, DevType, *optDebug)
+			go shell_backup_device(c, Hostname, Address, DevType, Site, *optDebug)
 		}
 	}
-	c.WaitAllDone()
+	if c.RunningCount() != 0 {
+		c.WaitAllDone()
+	}
 }
