@@ -39,7 +39,8 @@ type TypeCfg struct {
 }
 
 type SiteCfg struct {
-	ConfigDir string
+	ConfigDir      string
+	User, Password string
 }
 
 var (
@@ -171,10 +172,11 @@ func runcmd_device(Commands []string, e *expect.GExpect, Hostname string, prompt
 }
 func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType, Site string, optDebug bool) {
 	var (
-		e       *expect.GExpect
-		Timeout time.Duration
-		err     error
-		cfgDir  string
+		e              *expect.GExpect
+		Timeout        time.Duration
+		err            error
+		cfgDir         string
+		user, password string
 	)
 	defer c.Done()
 	userprompt := cfg.Type[DevType].UserPrompt
@@ -182,7 +184,6 @@ func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType,
 		userprompt = "ogin:"
 	}
 	fmt.Printf("Connecting to %s, %s type %s\n", Hostname, Address, DevType)
-	log.Printf("Connecting to %s, %s type %s\n", Hostname, Address, DevType)
 	promptRE := regexp.MustCompile(cfg.Type[DevType].Prompt)
 	userRE := regexp.MustCompile(userprompt)
 	passRE := regexp.MustCompile(cfg.Type[DevType].PwdPrompt)
@@ -192,12 +193,23 @@ func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType,
 		s, _ := strconv.Atoi(cfg.Type[DevType].Timeout)
 		Timeout = time.Duration(s) * time.Second
 	}
+	// user and password
+	if cfg.Site[Site].User != "" {
+		user = cfg.Site[Site].User
+	} else {
+		user = cfg.User
+	}
+	if cfg.Site[Site].Password != "" {
+		password = cfg.Site[Site].Password
+	} else {
+		password = cfg.Password
+	}
 	//connection to device
 	if cfg.Type[DevType].Method == "telnet" {
 		e, _, err = expect.Spawn(fmt.Sprintf("telnet %s %s", Address, cfg.Type[DevType].Port), -1, expect.Verbose(optDebug), expect.VerboseWriter(os.Stdout))
 	}
 	if cfg.Type[DevType].Method == "ssh" {
-		e, _, err = expect.Spawn(fmt.Sprintf("ssh -F /dev/null -o UserKnownHostsFile=/dev/null -o StricthostKeyChecking=false -p %s -l %s %s", cfg.Type[DevType].Port, cfg.User, Address), -1, expect.Verbose(optDebug), expect.VerboseWriter(os.Stdout))
+		e, _, err = expect.Spawn(fmt.Sprintf("ssh -F /dev/null -o UserKnownHostsFile=/dev/null -o StricthostKeyChecking=false -p %s -l %s %s", cfg.Type[DevType].Port, user, Address), -1, expect.Verbose(optDebug), expect.VerboseWriter(os.Stdout))
 	}
 	if err != nil {
 		log.Printf("device %s, error: %s\n", Hostname, err)
@@ -207,8 +219,8 @@ func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType,
 
 	//login to device
 	_, _, _, err = e.ExpectSwitchCase([]expect.Caser{
-		&expect.Case{R: userRE, S: cfg.User + "\n\r", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong username")), Rt: 2},
-		&expect.Case{R: passRE, S: cfg.Password + "\n\r", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong password")), Rt: 2},
+		&expect.Case{R: userRE, S: user + "\n\r", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong username")), Rt: 2},
+		&expect.Case{R: passRE, S: password + "\n\r", T: expect.Continue(expect.NewStatus(codes.PermissionDenied, "Access denied, wrong password")), Rt: 2},
 		&expect.Case{R: promptRE, T: expect.OK()},
 	}, Timeout)
 	if err != nil {
@@ -280,7 +292,7 @@ func main() {
 	}
 	log.SetOutput(lf)
 	defer lf.Close()
-
+	log.Printf("NDBack %s started. Backuping %d devices\n", version, len(db))
 	//go to hw
 	for i := 0; i < len(db); i++ {
 		Hostname := db[i][0]
@@ -303,4 +315,5 @@ func main() {
 	if c.RunningCount() != 0 {
 		c.WaitAllDone()
 	}
+	log.Printf("NDBack ended\n")
 }
