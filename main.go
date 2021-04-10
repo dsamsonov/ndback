@@ -209,7 +209,7 @@ func shell_backup_device(c goccm.ConcurrencyManager, Hostname, Address, DevType,
 		e, _, err = expect.Spawn(fmt.Sprintf("telnet %s %s", Address, cfg.Type[DevType].Port), -1, expect.Verbose(optDebug), expect.VerboseWriter(os.Stdout))
 	}
 	if cfg.Type[DevType].Method == "ssh" {
-		e, _, err = expect.Spawn(fmt.Sprintf("ssh -F /dev/null -o UserKnownHostsFile=/dev/null -o StricthostKeyChecking=false -p %s -l %s %s", cfg.Type[DevType].Port, user, Address), -1, expect.Verbose(optDebug), expect.VerboseWriter(os.Stdout))
+		e, _, err = expect.Spawn(fmt.Sprintf("ssh -o UserKnownHostsFile=/dev/null -o StricthostKeyChecking=false -p %s -l %s %s", cfg.Type[DevType].Port, user, Address), -1, expect.Verbose(optDebug), expect.VerboseWriter(os.Stdout))
 	}
 	if err != nil {
 		log.Printf("device %s, error: %s\n", Hostname, err)
